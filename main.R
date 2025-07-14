@@ -9,13 +9,15 @@
 ##      -- effect size (coefficients: or, interc)
 #--------------------------------------------------------------------------------
 
-setwd("C:/Users/Ermioni Athanasiadi/Documents/sicherung_offline_arbeiten/Missing_Data_offline/simulations/sim_binary_may2025/")
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+getwd()
 source("functions.R")
 
-setwd("C:/Users/Ermioni Athanasiadi/Documents/sicherung_offline_arbeiten/Missing_Data_offline/simulations/sim_binary_may2025/data")
+setwd("./data")
 
 n_vec <- c(50, 100)
 or_vec <- c(1.1, 2)
+interc <- 1.1
 miss_vec <- c(0.5, 0.25)
 impmethod <- "pmm"
 

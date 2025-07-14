@@ -10,7 +10,7 @@
 ##      -- effect size (coefficients: or, interc)
 #--------------------------------------------------------------------------------
 
-# this does not run from the console
+# this does not run from the console  # set working directory to where file is located
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 #--------------------------------------------------------------------------------
 
@@ -230,7 +230,7 @@ impute_data <- function(n_vec, or_vec, interc, nreps, missr, impmethod, seed) {
                 print(time.parallel)
                 
                 ## set filepath for result folder
-                filepath = "C:/Users/Ermioni Athanasiadi/Documents/sicherung_offline_arbeiten/Missing_Data_offline/simulations/sim_binary_may2025/results/"
+                filepath = "./../../binary_simulation_study/results"
                 
                 # save convergence information as df to file ################################
                 fname <- paste('df_perf_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
@@ -278,7 +278,7 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, missr, impmethod, seed) {
                 list_sims <- get(load(fname) )  # get object of loaded file
                 
                 # specify filepath for retrieving and saving results
-                filepath_results = "C:/Users/Ermioni Athanasiadi/Documents/sicherung_offline_arbeiten/Missing_Data_offline/simulations/sim_binary_may2025/results/"
+                filepath_results = "./../../binary_simulation_study/results"
                 # retrieve df with performance results
                 fname_perf <- paste('df_perf_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
                 df_perf_results <- get(load(paste0(filepath_results, fname_perf)))
