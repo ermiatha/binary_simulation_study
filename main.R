@@ -15,11 +15,13 @@ source("functions.R")
 
 setwd("./data")
 
-n_vec <- c(50, 100)
+n_vec <- c(20, 100)
 or_vec <- c(1.1, 2)
 interc <- 1.1
 miss_vec <- c(0.5, 0.25)
-impmethod <- "pmm"
+
+impmethod_vec <- c("logreg", "pmm")
+impmethod <- "logreg"
 
 nreps <- 50
 #single_sim <- generate_df(50, or, interc)
@@ -29,6 +31,11 @@ generate_replications(n_vec, or_vec, interc, nreps, seed)
 
 generate_na_data(n_vec, or_vec, interc, nreps, miss_vec, seed)
 
-impute_data(n_vec, or_vec, interc, nreps, missr, impmethod, seed)
+impute_data(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed)
 
-analyse_data(n_vec, or_vec, interc, nreps, missr, impmethod, seed)
+analyse_data(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed)
+
+setwd("./../results")
+summarize_data(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec, seed)
+
+

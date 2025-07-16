@@ -123,7 +123,7 @@ generate_na <- function(dat, missr) {
 #-------------------------------------------------------------------------------
 # Function to apply na generating function to all replications and conditions
 
-generate_na_data <- function(n_vec, or_vec, interc, nreps, missr, seed) {
+generate_na_data <- function(n_vec, or_vec, interc, nreps, miss_vec, seed) {
     for (j in 1:length(n_vec)) {
         n <- n_vec[j]
         
@@ -201,7 +201,7 @@ performance_results <- function(list_sims, nreps) {
 
 #-------------------------------------------------------------------------------
 # Function to generate imputed data for all replications and conditions
-impute_data <- function(n_vec, or_vec, interc, nreps, missr, impmethod, seed) {
+impute_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed) {
     for (j in 1:length(n_vec)) {
         n <- n_vec[j]
         
@@ -233,6 +233,11 @@ impute_data <- function(n_vec, or_vec, interc, nreps, missr, impmethod, seed) {
                 filepath = "./../../binary_simulation_study/results/"
                 
                 # save convergence information as df to file ################################
+                ######
+                # future idea:
+                # only variable to be retrieved in this step, all others later
+                # --> rename for clarity ("convergence"), save as vectors?
+                ######
                 fname <- paste('df_perf_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
                 df_perf_results <- performance_results(list_sims, nreps)
                 print(paste("Saving file:", fname))
@@ -254,15 +259,45 @@ impute_data <- function(n_vec, or_vec, interc, nreps, missr, impmethod, seed) {
 #-------------------------------------------------------------------------------
 # function to estimate effects for single dataframe given a list of imputed datasets
 estimate_effects <- function(imp) {
-    imp_models <- with(data = imp, glm(y_i ~ group, family = "binomial"))
-    model_coefs <- summary(mice::pool(imp_models))[-1, -1]
+    
+    # initiate empty results df
+    model_coefs <- data.frame("estimate" = NA, "std.error" = NA, "statistic" = NA, "df" = NA, "p.value" = NA)
+    
+        # only estimate pooled results if replication is successful
+        if (!is.null(imp)) {
+            imp_models <- with(data = imp, glm(y_i ~ group, family = "binomial"))
+            model_coefs <- summary(mice::pool(imp_models))[-1, -1]
+        }
+
     return(model_coefs)
 }
 
+#-------------------------------------------------------------------------------
+# Function to calculate performance-related outcomes, given a dataframe
+add_perf_results <- function(df)  { #what other parameters? 
+    # given: a dataframe containing all rows with successful replications
+    
+    # boolean: significant p-value y=1 or n=0
+    df$signif <- ifelse(df$p.value < .05, 1, 0)
+    
+    # Bias
+    # abs_bias for or
+    # rel_bias for or
+    
+    # abs_bias for se
+    # rel_bias for se
+    
+    # percent zeros
+    
+    # runtimes ##################
+    
+    
+    return(df)
+}
 
 #-------------------------------------------------------------------------------
 # Function to analyse data and export dfs with results for all replications and conditions 
-analyse_data <- function(n_vec, or_vec, interc, nreps, missr, impmethod, seed) {
+analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed) {
     for (j in 1:length(n_vec)) {
         n <- n_vec[j]
         
@@ -271,6 +306,7 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, missr, impmethod, seed) {
             
             # different missingness levels 
             for (m in 1:length(miss_vec)) {
+                print(paste("Currently at n, or, missingness:", n_vec[j], or_vec[i], miss_vec[m]))
                 
                 # load imputed dataframes
                 missr <- miss_vec[m]
@@ -281,22 +317,17 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, missr, impmethod, seed) {
                 filepath_results = "./../../binary_simulation_study/results/"
                 # retrieve df with performance results
                 fname_perf <- paste('df_perf_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+                
                 df_perf_results <- get(load(paste0(filepath_results, fname_perf)))
                 
-                # estimate effects for all replications that converged:
+                # estimate effects for all replications (NA rows for non-converged replications)
                 time.parallel <- system.time(
-                    list_sims <- future_apply(list_sims, function(i) {
-                        if (!is.null(i)) 
-                            estimate_effects(i) 
-                        else 
-                            (NULL)
-                        },
-                        future.seed = TRUE)
+                    estimated_effects <- future_lapply(list_sims, function(i) estimate_effects(i), future.seed = TRUE)
                 )
                 
                 ## user info:
-                num_successful_sims = length(which(list_sims == "NULL"))
-                perc_successful_sims = num_successful_sims / length(list_sims)
+                num_successful_sims = length(which(list_sims != "NULL"))
+                perc_successful_sims = (num_successful_sims / length(list_sims) ) * 100
                 print(paste("Effects were estimated based on successful replications: 
                             Number of successful replications:", 
                             num_successful_sims, 
@@ -308,29 +339,135 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, missr, impmethod, seed) {
                 print(time.parallel)
                 
                 # save results of all replications as dataframes
-                df_sims <- do.call(rbind, lapply(list_sims, function(x) x))
-                
+                df_results_all <- do.call(rbind, lapply(estimated_effects, function(x) x))
                 # add performance results to df
-                df_sims <- cbind(df_sims, df_perf_results)
-                
-                
-                fname <- paste('df_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
-                vname <- paste('df_results',n,'_',or,'_',missr,impmethod, sep='')
-                assign(vname, df_sims)
-                
-                
-                # save result dfs as files
+                df_results_all <- cbind(df_results_all, df_perf_results)
+                # set file names
+                fname <- paste('df_results_all',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+                vname <- paste('df_results_all',n,'_',or,'_',missr,impmethod, sep='')
+                assign(vname, df_results_all)
+                # save complete result dfs as files
                 print(paste("Saving file:", vname))
-                save(df_sims, file = paste0(filepath_results, fname), compress = F)
+                save(df_results_all, file = paste0(filepath_results, fname), compress = F)
                 
-                #### ADD variables ###
+                # now look at subset of successful replications (convergence)
+                # extract relevant rows 
+                df_results_succ <- df_results_all %>%
+                    filter(convergence == 1)
                 
-                # convergence, runtime
+                # add further variables for performance-related outcomes #
+                df_results_succ <- add_perf_results(df_results_succ)
                 
+                # set file names
+                fname <- paste('df_results_succ',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+                vname <- paste('df_results_succ',n,'_',or,'_',missr,impmethod, sep='')
+                assign(vname, df_results_succ)
+                # save successful result dfs as files
+                print(paste("Saving file:", vname))
+                save(df_results_succ, file = paste0(filepath_results, fname), compress = F)
+
                 
             }
         }
     }
 }
+
+#-------------------------------------------------------------------------------
+# Function to summarize the results of successful replications of a simulation study, given a df
+get_summary_stats <- function(df, n, or, missr) {
+    # input: a dataframe with results for all successful replications, other pars
+    
+    mean_or_hat   <- mean(exp(df[, 1]))
+
+    mean_prob_hat <- mean(exp(df[, 1])) / (1 + mean(exp(df[, 1])))
+    power         <- sum(df$signif) / nrow(df)
+    true_or       <- or
+    true_prob     <- or / (1 + or)   # check this!!
+    # print(paste("printing mean estimated or, mean_prob_hat:", mean_or_hat, mean_prob_hat))
+    
+    # absolute bias
+    # relative bias
+    
+    # mean_se_hat
+    # true_se
+    
+    # perc_zeros
+    
+    df_summ <- data.frame(mean_or_hat, mean_prob_hat, power, true_or, true_prob)
+
+    return(df_summ)
+    
+}
+
+
+
+#-------------------------------------------------------------------------------
+# Function to summarize and export results as dfs for all simulation conditions
+summarize_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec, seed) {
+
+    # extend this later to run for all impmethods ? ###########################
+    impmethod <- impmethod_vec[1]
+    ###########################################################################
+    
+    # specify filepath for retrieving and saving results
+    filepath_results = "./../results/"
+    fname <- paste('df_results_succ',n_vec[1],'_',or_vec[1],'_',miss_vec[1],impmethod,'.RData', sep='')
+    df_results_succ <- get(load(fname) )  # get object of loaded file
+    
+    # initialize empty result dataframe for all conditions (except impmethod, see above)
+    df_summ_all_cond <- expand.grid(impmethod = impmethod, 
+                                    miss = miss_vec, 
+                                    or = or_vec, 
+                                    n = n_vec)[, c("n", "or", "miss", "impmethod")]
+    # grab all result variables 
+    result_vars <- names(get_summary_stats(df = df_results_succ, n = n_vec[1], or_vec[1], miss_vec[1]))
+    df_summ_all_cond[, result_vars] <- NA
+    
+    # get results for each condition
+    for (j in 1:length(n_vec)) {
+        n <- n_vec[j]
+        
+        for (i in 1:length(or_vec)) {
+            or <- or_vec[i]
+            
+            for (m in 1:length(miss_vec)) {
+                missr <- miss_vec[m]
+                
+                print(paste("Currently at n, or, missingness:", n_vec[j], or_vec[i], miss_vec[m]))
+                
+                # calculate row-major order index calculation (1-based)
+                # from Wikipedia: https://en.wikipedia.org/wiki/Row-_and_column-major_order
+                row_index <- ((j - 1) * length(or_vec) * length(miss_vec)) +
+                    +     ((i - 1) * length(miss_vec)) + m
+                
+                # load result dfs from successful replications
+                fname <- paste('df_results_succ',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+                df_results_succ <- get(load(fname) )  # get object of loaded file
+                
+                ## create df with summarized results
+                df_summ_results <- get_summary_stats(df_results_succ, n, or, missr)
+                
+                fname <- paste('df_summ_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+                vname <- paste('df_summ_results',n,'_',or,'_',missr,impmethod, sep='')
+                assign(vname, df_summ_results)
+                
+                
+                # save result dfs as files
+                print(paste("Saving file:", vname))
+                save(df_summ_results, file = paste0(filepath_results, fname), compress = F)
+                
+                # save result row at correct index of result dataframe
+                df_summ_all_cond[row_index, result_vars] <- df_summ_results
+
+            }
+        }
+    }
+    print("Saving final result file:")
+    print(df_summ_all_cond)
+    save(df_summ_all_cond, file = paste0(filepath_results, "df_summ_all_cond.RData"), compress = F)
+}
+
+
+
 
 
