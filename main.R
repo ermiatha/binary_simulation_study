@@ -13,29 +13,36 @@ setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 getwd()
 source("functions.R")
 
+### REMOVE THIS AND ADD THE FOLLOWING TO functions.R in each function: 
+# add ./data in file path of where to save or retrieve files from
 setwd("./data")
 
-n_vec <- c(20, 50, 100)
-or_vec <- c(1.1, 2)
+n_vec <- c(20)
+or_vec <- c(1.1)
 interc <- 1.1
-miss_vec <- c(0.1, 0.25, 0.5)
+miss_vec <- c(0.5)
 
-impmethod_vec <- c("pmm", "logreg")
-impmethod <- "pmm"
+impmethod_vec <- c("none", "logreg")
+impmethod <- "none"
 
-nreps <- 1000
-#single_sim <- generate_df(50, or, interc)
+nreps <- 10
 seed = 2025
 
 generate_replications(n_vec, or_vec, interc, nreps, seed)
 
+analyse_data(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed, is.complete = TRUE)
+setwd("./../results")
+summarize_data(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec, seed, is.complete = TRUE)
+
+setwd("./../data")
 generate_na_data(n_vec, or_vec, interc, nreps, miss_vec, seed)
 
 impute_data(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed)
 
-analyse_data(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed)
+analyse_data(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed, is.complete = FALSE)
 
 setwd("./../results")
-summarize_data(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec, seed)
+summarize_data(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec, seed, is.complete = FALSE)
 
 
+# setwd("./../results")
