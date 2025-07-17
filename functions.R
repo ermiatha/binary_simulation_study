@@ -250,6 +250,11 @@ impute_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed)
                 print(paste("Saving file:", vname))
                 save(list_sims, file = fname, compress = F)
                 
+                
+                ### save time information as vector to results / data folder HERE
+                ###
+                ###
+                ################################################################
             }
         }
     }
@@ -261,12 +266,16 @@ impute_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed)
 estimate_effects <- function(imp) {
     
     # initiate empty results df
-    model_coefs <- data.frame("estimate" = NA, "std.error" = NA, "statistic" = NA, "df" = NA, "p.value" = NA)
+    model_coefs <- data.frame("estimate" = NA, "std.error" = NA, "statistic" = NA, 
+                              "df" = NA, "p.value" = NA, "conf.low" = NA, "conf.high" = NA)
     
         # only estimate pooled results if replication is successful
         if (!is.null(imp)) {
             imp_models <- with(data = imp, glm(y_i ~ group, family = "binomial"))
-            model_coefs <- summary(mice::pool(imp_models))[-1, -1]
+            model_coefs <- summary(mice::pool(imp_models), conf.int = TRUE)[-1, -1]
+            # remove double columns for lower and upper CI
+            model_coefs <- model_coefs[-c(6,7)]
+
         }
 
     return(model_coefs)
@@ -274,11 +283,15 @@ estimate_effects <- function(imp) {
 
 #-------------------------------------------------------------------------------
 # Function to calculate performance-related outcomes, given a dataframe
-add_perf_results <- function(df)  { #what other parameters? 
+add_perf_results <- function(df, or)  { #what other parameters? 
     # given: a dataframe containing all rows with successful replications
+    
+    true_or <- or
     
     # boolean: significant p-value y=1 or n=0
     df$signif <- ifelse(df$p.value < .05, 1, 0)
+    
+    df$coverage_dummy <- ifelse((true_or >= df$conf.low & true_or <= df$conf.high), 1, 0)
     
     # Bias
     # abs_bias for or
@@ -337,7 +350,7 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
                 
                 # print time for extracting results
                 print(time.parallel)
-                
+
                 # save results of all replications as dataframes
                 df_results_all <- do.call(rbind, lapply(estimated_effects, function(x) x))
                 # add performance results to df
@@ -356,7 +369,7 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
                     filter(convergence == 1)
                 
                 # add further variables for performance-related outcomes #
-                df_results_succ <- add_perf_results(df_results_succ)
+                df_results_succ <- add_perf_results(df_results_succ, or)
                 
                 # set file names
                 fname <- paste('df_results_succ',n,'_',or,'_',missr,impmethod,'.RData', sep='')
@@ -374,26 +387,46 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
 
 #-------------------------------------------------------------------------------
 # Function to summarize the results of successful replications of a simulation study, given a df
-get_summary_stats <- function(df, n, or, missr) {
+get_summary_stats <- function(df, n, or, missr, nreps) {
     # input: a dataframe with results for all successful replications, other pars
     
     mean_or_hat   <- mean(exp(df[, 1]))
+    or_hat        <- exp(df[, 1])
 
     mean_prob_hat <- mean(exp(df[, 1])) / (1 + mean(exp(df[, 1])))
     power         <- sum(df$signif) / nrow(df)
     true_or       <- or
     true_prob     <- or / (1 + or)   # check this!!
-    # print(paste("printing mean estimated or, mean_prob_hat:", mean_or_hat, mean_prob_hat))
+
+    coverage      <- sum(df$coverage_dummy) / nrow(df)
     
-    # absolute bias
-    # relative bias
+    perc_convergence <- sum(df$convergence) / nreps * 100
     
-    # mean_se_hat
-    # true_se
+
+
+    
+    # absolute and relative bias for or
+    abs_bias_or   <- mean_or_hat - true_or
+    rel_bias_or   <- mean(abs(true_or - or_hat) / true_or * 100)
+    
+    # absolute and relative bias for standard error
+    mean_se_hat   <- mean(df[, 2])
+    se_hat        <- df[, 2]
+    # true_se has to be calculated earlier based on complete sample and then passed
+    # as argument to this function
+    true_se       <- 1.1111111111111111111111111
+    abs_bias_se      <- mean_se_hat - true_se
+    rel_bias_se      <- mean(abs(true_se - se_hat) / true_se * 100)
     
     # perc_zeros
     
-    df_summ <- data.frame(mean_or_hat, mean_prob_hat, power, true_or, true_prob)
+    df_summ <- data.frame(
+                            mean_or_hat, mean_prob_hat, 
+                            true_or, true_prob,
+                            mean_se_hat,
+                            power, coverage,
+                            perc_convergence
+                          )
 
     return(df_summ)
     
@@ -420,7 +453,7 @@ summarize_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec
                                     or = or_vec, 
                                     n = n_vec)[, c("n", "or", "miss", "impmethod")]
     # grab all result variables 
-    result_vars <- names(get_summary_stats(df = df_results_succ, n = n_vec[1], or_vec[1], miss_vec[1]))
+    result_vars <- names(get_summary_stats(df = df_results_succ, n = n_vec[1], or_vec[1], miss_vec[1], nreps))
     df_summ_all_cond[, result_vars] <- NA
     
     # get results for each condition
@@ -445,7 +478,7 @@ summarize_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec
                 df_results_succ <- get(load(fname) )  # get object of loaded file
                 
                 ## create df with summarized results
-                df_summ_results <- get_summary_stats(df_results_succ, n, or, missr)
+                df_summ_results <- get_summary_stats(df_results_succ, n, or, missr, nreps)
                 
                 fname <- paste('df_summ_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
                 vname <- paste('df_summ_results',n,'_',or,'_',missr,impmethod, sep='')
@@ -466,6 +499,7 @@ summarize_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec
     print(df_summ_all_cond)
     save(df_summ_all_cond, file = paste0(filepath_results, "df_summ_all_cond.RData"), compress = F)
 }
+
 
 
 
