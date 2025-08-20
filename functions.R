@@ -249,7 +249,7 @@ impute_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed)
                 list_sims <- get(load(fname) )  # get object of loaded file
                 # print(fname)
 
-                # if valid impmethod, generate imputated datasets for all replications
+                # if valid impmethod, generate imputed datasets for all replications
                 if (impmethod != "none") {
                     # generate imputated datasets for all replications
 
@@ -343,15 +343,19 @@ estimate_effects_imp <- function(imp) {
 #________________________________________________________________________________
 # function to estimate effects for single dataframe given a complete or incomplete dataset
 estimate_effects <- function(df) {
+
     # initiate empty results df
     model_coefs <- data.frame("estimate" = NA, "std.error" = NA, "statistic" = NA, 
                               "df" = NA, "p.value" = NA, "conf.low" = NA, "conf.high" = NA)
     
     # estimate effects with incomplete dataset -> handles missings with LD
-    model_summ <- summary(glm(y_i ~ group, family = "binomial", data = df))$coefficients[-1, ]
+    model <- glm(y_i ~ group, family = "binomial", data = df)
+    model_summ <- summary(model)$coefficients[-1, ]
     
     # extract relevant parameters for output
     # MISSING INFORMATION FOR LOWER AND UPPER CI
+    model_coefs$conf.low <- confint(model)[2]
+    model_coefs$conf.high <- confint(model)[4]
     model_coefs$estimate <- model_summ[1]
     model_coefs$std.error <- NULL
     model_coefs[, c(1, 2, 4)] <- c(model_summ[1], model_summ[2], model_summ[4])
@@ -412,6 +416,11 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
                 
                 # load imputed dataframes
                 missr <- miss_vec[m]
+                
+                # if is.complete == TRUE
+                # fname <- paste('list_data',n,'_',or,'.RData', sep='')
+                
+                
                 fname <- paste('list_data_imp',n,'_',or,'_',missr,impmethod,'.RData', sep='')
                 list_sims <- get(load(fname) )  # get object of loaded file
                 
@@ -504,6 +513,7 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
 # Function to summarize the results of successful replications of a simulation study, given a df
 get_summary_stats <- function(df, n, or, missr, nreps) {
     # input: a dataframe with results for all successful replications, other pars
+    print(df)
     
     mean_or_hat   <- mean(exp(df[, 1]))
     or_hat        <- exp(df[, 1])
@@ -594,6 +604,9 @@ summarize_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec
                 # load result dfs from successful replications
                 fname <- paste('df_results_succ',n,'_',or,'_',missr,impmethod,'.RData', sep='')
                 df_results_succ <- get(load(fname) )  # get object of loaded file
+                
+                ## add condition check? e.g. ONLY estimate summary stats if at least 
+                ## 30% (??) of replications were successful
                 
                 ## create df with summarized results
                 df_summ_results <- get_summary_stats(df_results_succ, n, or, missr, nreps)

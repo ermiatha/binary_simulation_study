@@ -1,7 +1,9 @@
 #--------------------------------------------------------------------------------
 ## Title:                       Main Script for a Binary Simulation Study
 ## Author:                      Ermioni Athanasiadi
-## Last modification:           10.07.2025
+## Last modification:           21.08.2025   
+## History of modifications:
+##                              10.07.2025
 ## a simulation study with 
 ## binary outcome and simple one-factor experimental design
 ## manipulated conditions:
