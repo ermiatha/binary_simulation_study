@@ -161,28 +161,41 @@ generate_na_data <- function(n_vec, or_vec, interc, nreps, miss_vec, seed) {
 # Function to impute missing values with blimp given a dataframe
 impute_blimp <- function(dat) {
     
+    ## add check for updates:
+    # remotes::update_packages('rblimp')
+    
     dat$y_i <- as.integer(dat$y_i)
     dat$y_i <- ifelse(dat$y_i == 1, 0, 1)
     
     # truemodel <- glm(y_i ~ group, data = dat, family = binomial())
     # summary(truemodel)
     
-    imp_blimp <- rblimp(
-        data = dat,
-        ordinal = 'y_i group',
-        fixed = 'group',
-        model = 'logit(y_i) ~ group',
-        seed = 2025,
-        burn = 1000,
-        iter = 10000,
-        nimps = 5
-    )
+    # tryCatch to handle any errors and return NULL if imputation fails
+    imp_blimp <- tryCatch({
+        suppressWarnings({
+            rblimp(
+                data = dat,
+                ordinal = 'y_i group',
+                fixed = 'group',
+                model = 'logit(y_i) ~ group',
+                seed = 2025,
+                burn = 1000,
+                iter = 10000,
+                nimps = 5
+            )
+            # output(imp_blimp)
+            as.mitml(imp_blimp)
+        })
+    }, error = function(e) {
+        message("XXX Error in imputation: ", e$message)  # print the error message
+        return(NULL)  # return NULL to indicate failure
+    }) 
     
-    # output(imp_blimp)
-    imp <- as.mitml(imp_blimp)
-    
+    # if (is.null(imp_blimp)) {
+    #     return(NULL)  # return integer 0 explicitly
+    # }
 
-    return(imp)
+    return(imp_blimp)
 }
 
 #________________________________________________________________________________
@@ -261,7 +274,17 @@ impute_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed)
                             future.seed = TRUE))
                     
                     # print execution time for imputation
-                    print(time.parallel)    
+                    print(time.parallel)
+                    
+                    # save execution time to list for later access
+                    list_sims <- lapply(list_sims, function(x) {
+                        if (!is.null(x)) {
+                            attr(x, "timing")  <- time.parallel 
+                            attr(x, "timing2") <- time.parallel[3]
+                        }
+                        x
+                    })
+                    
                 }
 
                 
@@ -279,6 +302,11 @@ impute_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed)
                 ##
                 fname <- paste('df_perf_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
                 df_perf_results <- performance_results(list_sims, nreps)
+                
+                # now add timing to df
+                # move this into performance_results_function?
+                df_perf_results$timing <- sapply(list_sims, function(x) attr(x, "timing")[3])
+                
                 print(paste("Saving file:", fname))
                 save(df_perf_results, file = paste0(filepath, fname), compress = F)
                 
@@ -314,6 +342,8 @@ performance_results <- function(list_sims, nreps) {
     list_convergence <- cbind(lapply(list_sims, typeof))
     ## save convergence information to list: 1 indicates success, 0 (NULL) failure
     df$convergence <- ifelse(unlist(list_convergence) == "list", 1, 0)
+    # correction ?
+    # df$convergence <- ifelse(sapply(list_sims, is.null), 0, 1)
     
     return(df)
 }
@@ -353,16 +383,72 @@ estimate_effects <- function(df) {
     model_summ <- summary(model)$coefficients[-1, ]
     
     # extract relevant parameters for output
-    # MISSING INFORMATION FOR LOWER AND UPPER CI
     model_coefs$conf.low <- confint(model)[2]
     model_coefs$conf.high <- confint(model)[4]
     model_coefs$estimate <- model_summ[1]
-    model_coefs$std.error <- NULL
-    model_coefs[, c(1, 2, 4)] <- c(model_summ[1], model_summ[2], model_summ[4])
-    
+    model_coefs$statistic <- NA # keep column because present in results from imp objects
+    model_coefs[, c(1, 2, 5)] <- c(model_summ[1], model_summ[2], model_summ[4])
     
     return(model_coefs)
 }
+
+
+## UPDATED
+estimate_effects <- function(df) {
+    # initiate empty results df
+    model_coefs <- data.frame(
+        estimate   = NA,
+        std.error  = NA,
+        statistic  = NA,
+        df         = NA,
+        p.value    = NA,
+        conf.low   = NA,
+        conf.high  = NA
+    )
+    
+    # quick checks before fitting
+    if (nrow(df) == 0) {
+        return(model_coefs)
+    }
+    
+    # if group has fewer than 2 levels after LD → cannot fit model
+    if (length(unique(df$group)) < 2) {
+        return(model_coefs)
+    }
+    
+    # fit logistic regression safely
+    fit <- tryCatch(
+        glm(y_i ~ group, family = "binomial", data = df),
+        error = function(e) return(NULL),
+        warning = function(w) invokeRestart("muffleWarning") # suppress warnings
+    )
+    
+    # if fitting failed, return NA row
+    if (is.null(fit)) {
+        return(model_coefs)
+    }
+    
+    # extract coefficients safely
+    model_summ <- summary(fit)$coefficients
+    # skip intercept
+    if (nrow(model_summ) < 2) {
+        return(model_coefs)
+    }
+    
+    # confidence intervals (use tryCatch, because confint may fail too)
+    ci <- tryCatch(confint(fit), error = function(e) matrix(NA, ncol = 2, nrow = 2))
+    
+    # fill in coefficients
+    model_coefs$estimate  <- model_summ[2, 1]
+    model_coefs$std.error <- model_summ[2, 2]
+    model_coefs$p.value   <- model_summ[2, 4]
+    model_coefs$statistic <- NA  # not available for glm by default
+    model_coefs$conf.low  <- ci[2, 1]
+    model_coefs$conf.high <- ci[2, 2]
+    
+    return(model_coefs)
+}
+
 
 #________________________________________________________________________________
 # Function to calculate performance-related outcomes, given a dataframe
@@ -399,6 +485,126 @@ add_perf_results <- function(df, or)  { #what other parameters?
 # }
 # 
 
+analyse_complete_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed, is.complete) {
+    
+    for (j in 1:length(n_vec)) {
+        n <- n_vec[j]
+        
+        for (i in 1:length(or_vec)) {
+            or <- or_vec[i]
+            
+
+            print(getwd())
+            print(paste("Currently at n, or:", n_vec[j], or_vec[i]))
+            
+            
+            # if is.complete == TRUE
+            if (impmethod == "none") {
+                fname <- paste('list_data',n,'_',or,'.RData', sep='')
+            }
+            else {
+                print("not yet coded")
+                #fname <- paste('list_data_imp',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+            }
+            
+            
+            print(fname)
+            
+            list_sims <- get(load(fname) )  # get object of loaded file
+
+            # specify filepath for retrieving and saving results
+            filepath_results = "./../../binary_simulation_study/results/"
+            # retrieve df with performance results
+            
+            fname_perf <- paste('df_perf_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+            
+            df_perf_results <- get(load(paste0(filepath_results, fname_perf)))
+            
+            
+            #df_perf_results <- add_perf_results()
+            
+            # if no impmethod specified or data is complete: simple effect estimation
+            # Note: this performs listwise deletion if data is incomplete
+            if (impmethod == "none" | is.complete == TRUE) {
+                time.parallel <- system.time(
+                    estimated_effects <- future_lapply(list_sims, function(i) estimate_effects(i), future.seed = TRUE)
+                )
+            }
+            
+            # if impmethod specified: estimate effects with imp object
+            else {
+                # estimate effects for all replications (NA rows for non-converged replications)
+                time.parallel <- system.time(
+                    estimated_effects <- future_lapply(list_sims, function(i) estimate_effects_imp(i), future.seed = TRUE)
+                )
+            }
+            
+            ## user info:
+            num_successful_sims = length(which(list_sims != "NULL"))
+            perc_successful_sims = (num_successful_sims / length(list_sims) ) * 100
+            print(paste("Effects were estimated based on successful replications: 
+                        Number of successful replications:", 
+                        num_successful_sims, 
+                        "Percentage % ", 
+                        perc_successful_sims))
+            
+            
+            # print time for extracting results
+            print(time.parallel)
+            
+            # save results of all replications as dataframes
+            df_results_all <- do.call(rbind, lapply(estimated_effects, function(x) x))
+            # add performance results to df
+            df_results_all <- cbind(df_results_all, df_perf_results)
+            
+            # give different filename to complete dataframe
+            ##
+            # future idea: migrate data analysis for complete data into extra 
+            # function for clarity and structure
+            ##
+            ##
+            if (is.complete == TRUE) {
+                print("correctly checking that we have a complete dataset here")
+                complete <- "complete"
+            }
+            else {
+                complete <- ""
+            }
+            
+            # set file names
+            fname <- paste(complete,'df_results_all',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+            vname <- paste(complete,'df_results_all',n,'_',or,'_',missr,impmethod, sep='')
+            assign(vname, df_results_all)
+            # save complete result dfs as files
+            print(paste("Saving file:", vname))
+            save(df_results_all, file = paste0(filepath_results, fname), compress = F)
+            
+            # now look at subset of successful replications (convergence)
+            # extract relevant rows 
+            df_results_succ <- df_results_all %>%
+                filter(convergence == 1)
+            
+            ### add check here AND later: 
+            ## only calculate the performance measures if at least 50% 
+            # of the replications were successful
+            
+            # add further variables for performance-related outcomes #
+            df_results_succ <- add_perf_results(df_results_succ, or)
+            
+            # set file names
+            fname <- paste(complete,'df_results_succ',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+            vname <- paste(complete,'df_results_succ',n,'_',or,'_',missr,impmethod, sep='')
+            assign(vname, df_results_succ)
+            # save successful result dfs as files
+            print(paste("Saving file:", vname))
+            save(df_results_succ, file = paste0(filepath_results, fname), compress = F)
+                
+                
+            
+        }
+    }
+}
+
 
 #________________________________________________________________________________
 # Function to analyse data and export dfs with results for all replications and conditions 
@@ -412,6 +618,7 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
             
             # different missingness levels 
             for (m in 1:length(miss_vec)) {
+                print(getwd())
                 print(paste("Currently at n, or, missingness:", n_vec[j], or_vec[i], miss_vec[m]))
                 
                 # load imputed dataframes
@@ -420,16 +627,36 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
                 # if is.complete == TRUE
                 # fname <- paste('list_data',n,'_',or,'.RData', sep='')
                 
+                if (impmethod == "none") {
+                    # fname <- paste('list_data_imp',n,'_',or,'_',missr,'.RData', sep='')
+                    fname <- paste('list_data',n,'_',or,'.RData', sep='')
+                }
                 
-                fname <- paste('list_data_imp',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+                else if (impmethod == "ld") {
+                    fname <- paste('list_data_na',n,'_',or,'_',missr,'.RData', sep='')
+                    # placeholder to retain same structure - no timing and convergence info for ld
+                    df_perf_results <- data.frame(convergence = rep(NA, nreps), timing = rep(NA, nreps))
+                }
+                
+                else {
+                    fname <- paste('list_data_imp',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+                    # retrieve df with performance results
+                    fname_perf <- paste('df_perf_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
+                    df_perf_results <- get(load(paste0(filepath_results, fname_perf)))
+                }
+                
+
+                print(fname)
+
                 list_sims <- get(load(fname) )  # get object of loaded file
-                
+                # NOTE: depending on earlier condition check, this is either
+                # a list of imputed datasets or complete or incomplete datasets
+                # rewrite this later for easier debugging
+ 
                 # specify filepath for retrieving and saving results
                 filepath_results = "./../../binary_simulation_study/results/"
-                # retrieve df with performance results
-                fname_perf <- paste('df_perf_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
-                
-                df_perf_results <- get(load(paste0(filepath_results, fname_perf)))
+
+
                 
                 # if no impmethod specified or data is complete: simple effect estimation
                 # Note: this performs listwise deletion if data is incomplete
@@ -439,11 +666,28 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
                 )
                 }
                 
+                else if (impmethod == "ld") {
+                    # listwise deletion
+                    print(paste0("Listwise deletion: now estimating effects for ", fname))
+                    time.parallel <- system.time(
+                        estimated_effects <- future_lapply(
+                            list_sims, # loads datasets with NAs
+                            function(i) estimate_effects(i), 
+                            future.seed = TRUE
+                        )
+                    )
+                    df_perf_results$timing <- time.parallel[3]
+                }
+                
                 # if impmethod specified: estimate effects with imp object
                 else {
                     # estimate effects for all replications (NA rows for non-converged replications)
+                    print(paste0("Imputation method: ", impmethod, " now estimating effects for ", fname))
                     time.parallel <- system.time(
-                        estimated_effects <- future_lapply(list_sims, function(i) estimate_effects_imp(i), future.seed = TRUE)
+                        estimated_effects <- future_lapply(
+                            list_sims, # loads imputed datasets
+                            function(i) estimate_effects_imp(i), 
+                            future.seed = TRUE)
                     )
                 }
                 
@@ -455,6 +699,10 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
                             num_successful_sims, 
                             "Percentage % ", 
                             perc_successful_sims))
+                
+                ## ADD:
+                # not only check imputation NULL objects, but also failed regression
+                # analyses 
 
                 
                 # print time for extracting results
@@ -472,7 +720,7 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
                 ##
                 ##
                 if (is.complete == TRUE) {
-                    print("correctly checking that we have a complete dataset here")
+                    # print("correctly checking that we have a complete dataset here")
                     complete <- "complete"
                 }
                 else {
@@ -490,7 +738,12 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
                 # now look at subset of successful replications (convergence)
                 # extract relevant rows 
                 df_results_succ <- df_results_all %>%
-                    filter(convergence == 1)
+                    filter(convergence == 1 | is.na(convergence))  # add na condition
+                                                                   # for ld case
+                
+                ### add check here AND later: 
+                ## only calculate the performance measures if at least 50% 
+                # of the replications were successful
                 
                 # add further variables for performance-related outcomes #
                 df_results_succ <- add_perf_results(df_results_succ, or)
@@ -511,10 +764,13 @@ analyse_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod, seed
 
 #--Part VI: Summary of Results -------------------------------------------------
 # Function to summarize the results of successful replications of a simulation study, given a df
-get_summary_stats <- function(df, n, or, missr, nreps) {
+get_summary_stats <- function(df, n, or, missr, nreps, flag_success) {
     # input: a dataframe with results for all successful replications, other pars
-    print(df)
+    #print(df)
     
+    # if no
+    if (flag_success == TRUE & nrow(df) != 0) {
+        
     mean_or_hat   <- mean(exp(df[, 1]))
     or_hat        <- exp(df[, 1])
     mean_prob_hat <- mean(exp(df[, 1])) / (1 + mean(exp(df[, 1])))
@@ -537,15 +793,61 @@ get_summary_stats <- function(df, n, or, missr, nreps) {
     abs_bias_se      <- mean_se_hat - true_se
     rel_bias_se      <- mean(abs(true_se - se_hat) / true_se * 100)
     
-    # perc_zeros
+    #runtime        <- NA
+    ## runtimes:
+    # no still given as col with repeated equal number: sum over all nreps
+    if (!is.list(df$timing[1])) {
+     runtime       <- df$timing[1] / nreps
+    }
     
+    #else if (is.null())
+    
+    else {
+        print("timing is inside extra list element")
+        runtime       <- df$timing[[1]] / nreps
+    }
+
+    
+    #save(df$timing, file = "timing-test.RData")
+    print(paste("current summary: n, or, missr", n, or, missr))
+    #print(summary(nreps))
+    print(df$timing[1])  # NA
+    print(df$timing2)  # NULL
+    
+    runtime2 <- df$timing2[1]
+    
+    
+    # perc_zeros
     df_summ <- data.frame(
-                            mean_or_hat, mean_prob_hat, 
-                            true_or, true_prob,
-                            mean_se_hat,
-                            power, coverage,
-                            perc_convergence
-                          )
+        mean_or_hat, 
+        mean_prob_hat, 
+        true_or, 
+        true_prob,
+        mean_se_hat,
+        abs_bias_or,
+        rel_bias_or,
+        power, 
+        coverage,
+        perc_convergence,
+        runtime
+    )
+    
+    }
+    else {
+        df_summ <- data.frame(
+            mean_or_hat = NA, 
+            mean_prob_hat = NA,
+            true_or = NA,
+            true_prob = NA,
+            mean_se_hat = NA,
+            power = NA,
+            coverage = NA,
+            perc_convergence = NA,
+            runtime = NA
+        )
+    }
+        
+
 
     return(df_summ)
     
@@ -581,8 +883,10 @@ summarize_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec
                                     or = or_vec, 
                                     n = n_vec)[, c("n", "or", "miss", "impmethod")]
     # grab all result variables 
-    result_vars <- names(get_summary_stats(df = df_results_succ, n = n_vec[1], or_vec[1], miss_vec[1], nreps))
+    result_vars <- names(get_summary_stats(df = df_results_succ, n = n_vec[1], or_vec[1], miss_vec[1], nreps, flag_success = TRUE))
     df_summ_all_cond[, result_vars] <- NA
+    
+    #print("TEST WORK UNTIL HERE?")
     
     # get results for each condition
     for (j in 1:length(n_vec)) {
@@ -596,7 +900,7 @@ summarize_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec
                 
                 print(paste("Currently at n, or, missingness:", n_vec[j], or_vec[i], miss_vec[m]))
                 
-                # calculate row-major order index calculation (1-based)
+                # calculate row-major order index (1-based)
                 # from Wikipedia: https://en.wikipedia.org/wiki/Row-_and_column-major_order
                 row_index <- ((j - 1) * length(or_vec) * length(miss_vec)) +
                     +     ((i - 1) * length(miss_vec)) + m
@@ -605,11 +909,26 @@ summarize_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec
                 fname <- paste('df_results_succ',n,'_',or,'_',missr,impmethod,'.RData', sep='')
                 df_results_succ <- get(load(fname) )  # get object of loaded file
                 
-                ## add condition check? e.g. ONLY estimate summary stats if at least 
-                ## 30% (??) of replications were successful
+                ## add condition check e.g. ONLY estimate summary stats if at least 
+                ## 30% (or 50%??) of replications were successful
                 
-                ## create df with summarized results
-                df_summ_results <- get_summary_stats(df_results_succ, n, or, missr, nreps)
+                if (nrow(df_results_succ) >= nreps*0.5) {
+                    print(paste0("Enough successful replications: ",
+                                 nrow(df_results_succ), "out of", nreps, 
+                                 "were successful. Obtaining summary statistics now"))
+                    flag_success = TRUE
+                }
+                
+                else {
+                    print("flag works correctly:")
+                    flag_success = FALSE
+                }
+                
+                ## create df (single row) with summarized results
+                ## if not enough successful runs, row with only NAs added
+                df_summ_results <- get_summary_stats(df_results_succ, n, or, missr, nreps, flag_success)
+                
+                
                 
                 fname <- paste('df_summ_results',n,'_',or,'_',missr,impmethod,'.RData', sep='')
                 vname <- paste('df_summ_results',n,'_',or,'_',missr,impmethod, sep='')
@@ -628,11 +947,258 @@ summarize_data <- function(n_vec, or_vec, interc, nreps, miss_vec, impmethod_vec
     }
     print("Saving final result file:")
     print(df_summ_all_cond)
-    save(df_summ_all_cond, file = paste0(filepath_results, "df_summ_all_cond.RData"), compress = F)
+    save(df_summ_all_cond, file = paste0(filepath_results, "df_summ_all_cond",impmethod, ".RData"), compress = F)
 }
 
 
+#--Part V: Visualization of Results -------------------------------------------------
+
+#________________________________________________________________________________
+# Function to visualize results, given a result dataframe and an imputation method
+
+visualize_bias <- function(impmethod, show_title = TRUE, figwidth = 5, figheight = 3) {
+
+    filepath_results = "./../results/"
+    fname <- paste0(filepath_results, "df_summ_all_cond",impmethod, ".RData")
+    
+    df <- get(load(fname) )  # get object of loaded file
+    
+    if (show_title == TRUE) {
+        plot_title = "Bias by Sample Size and Missingness Rate"
+    }
+    else
+        plot_title = ""
+    
+    
+    plt <- ggplot(df, aes(x = n, y = rel_bias_or, color = factor(true_or), group = true_or)) +
+        geom_point() +  # size = 1.8
+        geom_line() +  # linewith = 0.8
+        facet_wrap(~ miss, labeller = label_both) +
+        labs(
+            title = plot_title,
+            x = "n",
+            y = "Bias (%)",
+            color = "True OR"
+        ) +
+        theme_minimal()
+    plt
+    
+    fpath = "./../results/figures/"
+    type = "bias"
+    fname <- paste0(fpath, type, "_", impmethod, "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+    
+    ggsave(fname, plot = plt, width = figwidth, height = figheight)
+    
+}
+
+visualize_power <- function(impmethod, show_title = TRUE, figwidth = 5, figheight = 3) {
+    
+    filepath_results = "./../results/"
+    fname <- paste0(filepath_results, "df_summ_all_cond",impmethod, ".RData")
+    df <- get(load(fname) )  # get object of loaded file
+    
+    if (show_title == TRUE) {
+        plot_title = "Power by Sample Size and Missingness Rate"
+    }
+    else
+        plot_title = ""
+    
+    plt <- ggplot(df, aes(x = n, y = power, color = factor(true_or), group = true_or)) +
+        geom_point() +
+        geom_line() +
+        facet_wrap(~ miss, labeller = label_both) +
+        labs(
+            title = plot_title,
+            x = "n",
+            y = "Power",
+            color = "True OR"
+        ) +
+        theme_minimal()
+    plt
+    fpath = "./../results/figures/"
+    type = "power"
+    fname <- paste0(fpath, type, "_", impmethod, "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+    
+    ggsave(fname, plot = plt, width = figwidth, height = figheight)
+    
+    
+}
 
 
+visualize_coverage <- function(impmethod, show_title = TRUE, figwidth = 5, figheight = 3) {
+    
+    
+    filepath_results = "./../results/"
+    fname <- paste0(filepath_results, "df_summ_all_cond",impmethod, ".RData")
+    df <- get(load(fname) )  # get object of loaded file
+    
+    if (show_title == TRUE) {
+        plot_title = "Coverage by Sample Size and Missingness Rate"
+    }
+    else
+        plot_title = ""
+    
+    plt <- ggplot(df, aes(x = n, y = coverage, color = factor(true_or), group = true_or)) +
+        geom_point() +
+        geom_line() +
+        facet_wrap(~ miss, labeller = label_both) +
+        labs(
+            title = plot_title,
+            x = "n",
+            y = "Coverage",
+            color = "True OR"
+        ) +
+        theme_minimal()
+    
+    # show figure
+    plt
+    
+    fpath = "./../results/figures/"
+    type = "coverage"
+    fname <- paste0(fpath, type, "_", impmethod, "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+    
+    ggsave(fname, plot = plt, width = figwidth, height = figheight)
+    
+    
+}
+
+
+visualize_convergence <- function(impmethod, show_title = TRUE, figwidth = 5, figheight = 3) {
+    
+    
+    filepath_results = "./../results/"
+    fname <- paste0(filepath_results, "df_summ_all_cond",impmethod, ".RData")
+    df <- get(load(fname) )  # get object of loaded file
+    
+    if (show_title == TRUE) {
+        plot_title = "Convergence by Sample Size and Missingness Rate"
+    }
+    else
+        plot_title = ""
+    
+    plt <- ggplot(df, aes(x = n, y = perc_convergence, color = factor(true_or), group = true_or)) +
+        geom_point() +
+        geom_line() +
+        facet_wrap(~ miss, labeller = label_both) +
+        labs(
+            title = plot_title,
+            x = "n",
+            y = "Convergence (%)",
+            color = "True OR"
+        ) +
+        theme_minimal()
+    
+    plt
+    
+    fpath = "./../results/figures/"
+    type = "convergence"
+    fname <- paste0(fpath, type, "_", impmethod, "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+    
+    ggsave(fname, plot = plt, width = figwidth, height = figheight)
+    
+    
+}
+
+
+visualize_runtime <- function(impmethod, show_title = TRUE, figwidth = 5, figheight = 3) {
+    
+    
+    filepath_results = "./../results/"
+    fname <- paste0(filepath_results, "df_summ_all_cond",impmethod, ".RData")
+    df <- get(load(fname) )  # get object of loaded file
+    
+    if (show_title == TRUE) {
+        plot_title = "Runtime by Sample Size and Missingness Rate"
+    }
+    else
+        plot_title = ""
+    
+    plt <- ggplot(df, aes(x = n, y = runtime, color = factor(true_or), group = true_or)) +
+        geom_point() +
+        geom_line() +
+        facet_wrap(~ miss, labeller = label_both) +
+        labs(
+            title = plot_title,
+            x = "n",
+            y = "Runtime",
+            color = "True OR"
+        ) +
+        theme_minimal()
+    
+    plt
+    
+    fpath = "./../results/figures/"
+    type = "runtime"
+    fname <- paste0(fpath, type, "_", impmethod, "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+    
+    ggsave(fname, plot = plt, width = figwidth, height = figheight)
+    
+}
+
+
+visualize_runtime_by_impmethod <- function(impmethods = c("pmm", "logreg", "ld"),
+                                           show_title = TRUE, 
+                                           figwidth = 5, figheight = 3) {
+    
+    
+    filepath_results = "./../results/"
+    
+    # dynamically load data for selected methods
+    dfs <- lapply(impmethods, function(m) {
+        fname <- paste0(filepath_results, "df_summ_all_cond", m, ".RData")
+        df <- get(load(fname))
+        df <- df %>% mutate(impmethod = m)
+        return(df)
+    })
+    
+    df_combined <- bind_rows(dfs)
+    
+    if (show_title == TRUE) {
+        plot_title = "Runtime by Imputation Method, Sample Size and Missingness Rate"
+    }
+    else
+        plot_title = ""
+    
+    
+    plt <- ggplot(df_combined, aes(x = n, y = runtime, color = impmethod, group = impmethod)) +
+        geom_point() +
+        geom_line() +
+        facet_wrap(~ miss, labeller = label_both) +
+        labs(
+            title = plot_title,
+            x = "Sample Size (n)",
+            y = "Runtime (s)",
+            color = "Imputation Method"
+        ) +
+        theme_minimal()
+    
+    plt
+    
+    fpath = "./../results/figures/"
+    type = "runtime_impmethod"
+    fname <- paste0(fpath, type, "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+    
+    
+    ggsave(fname, plot = plt, width = figwidth, height = figheight)
+    
+    
+    
+}
+
+
+get_all_visualizations <- function() {
+    
+    impmethods <- c("pmm", "logreg", "ld")
+    
+    lapply(impmethods, function(impmethod) {
+    visualize_bias(impmethod, show_title = FALSE)
+    visualize_power(impmethod, show_title = FALSE)
+    visualize_coverage(impmethod, show_title = FALSE)
+    visualize_convergence(impmethod, show_title = FALSE)
+    visualize_runtime(impmethod, show_title = FALSE)
+    }
+    )
+    visualize_runtime_by_impmethod(impmethods, show_title = FALSE)
+}
 
 
